@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Iterable
 
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -81,33 +82,59 @@ def _kpi_card(label: str, value: int, color: str, key: str,
     return st.button("View students", key=key, use_container_width=True)
 
 
-def _detail_table(df: pd.DataFrame, columns: Iterable[str] = DETAIL_COLUMNS):
+def _detail_table(df: pd.DataFrame, columns: Iterable[str] = DETAIL_COLUMNS,
+                  filter_key: str = "risk"):
+    """
+    Render detail table with interactive risk filter chips.
+    
+    Args:
+        df: DataFrame to display
+        columns: Columns to show
+        filter_key: Unique key for this table's filter session state
+    """
     cols = [c for c in columns if c in df.columns]
     if df.empty:
         st.info("No students in this group.")
         return
 
-    # mini risk-distribution caption above the table
+    # Read selected risk filter from session state
+    selected_risk = st.session_state.get(f"risk_filter_{filter_key}")
+
+    # mini risk-distribution caption above the table with clickable filters
     if "risk_category" in df.columns:
         rd = risk_distribution(df)
         if not rd.empty:
-            chips = []
-            for k, v in rd.items():
-                bg = RISK_COLORS.get(k, "#475569")
-                chips.append(
-                    f"<span style='background:{bg};color:white;"
-                    f"padding:2px 8px;border-radius:10px;"
-                    f"font-size:0.8rem;margin-right:4px'>{k}: {int(v)}</span>"
-                )
-            chip_html = " ".join(chips)
-            st.markdown(
-                "<div style='margin:4px 0 8px 0'>"
-                "<span style='opacity:.7;font-size:0.85rem'>Course-wise risk:</span> "
-                f"{chip_html}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<span style='opacity:.7;font-size:0.85rem'>Course-wise risk (click to filter):</span>",
+                       unsafe_allow_html=True)
+            
+            # Create columns for risk chips as buttons
+            risk_cols = st.columns(len(rd))
+            
+            for i, (k, v) in enumerate(rd.items()):
+                with risk_cols[i]:
+                    bg = RISK_COLORS.get(k, "#475569")
+                    is_selected = selected_risk == k
+                    # Add highlight border if selected
+                    border = "3px solid #1e293b" if is_selected else "none"
+                    st.markdown(
+                        f"""<div style='background:{bg};color:white;
+                        padding:4px 12px;border-radius:10px;
+                        font-size:0.85rem;text-align:center;
+                        border:{border};'>{k}: {int(v)}</div>""",
+                        unsafe_allow_html=True,
+                    )
+                    # Click handler
+                    btn_label = "✓ Selected" if is_selected else "Filter"
+                    if st.button(btn_label, key=f"risk_btn_{filter_key}_{k}", use_container_width=True):
+                        st.session_state[f"risk_filter_{filter_key}"] = None if is_selected else k
+                        st.rerun()
 
-    show = df[cols].reset_index(drop=True).copy()
+    # Apply risk filter to the dataframe
+    display_df = df.copy()
+    if selected_risk and "risk_category" in df.columns:
+        display_df = df[df["risk_category"] == selected_risk].copy()
+
+    show = display_df[cols].reset_index(drop=True).copy()
 
     def _risk_bg(val):
         if pd.isna(val):
@@ -131,6 +158,50 @@ def _detail_table(df: pd.DataFrame, columns: Iterable[str] = DETAIL_COLUMNS):
 # ---------------------------------------------------------------------------
 # Tab 1: 3rd-Day Report
 # ---------------------------------------------------------------------------
+
+def _reasons_chart(df: pd.DataFrame, title: str = "Top Reasons", filter_key: str = "risk"):
+    """Create a bar chart of the top reasons from the dataframe, respecting risk filter."""
+    if df.empty or "reason" not in df.columns:
+        return
+    
+    # Apply risk filter if selected
+    display_df = df.copy()
+    selected_risk = st.session_state.get(f"risk_filter_{filter_key}")
+    if selected_risk and "risk_category" in df.columns:
+        display_df = df[df["risk_category"] == selected_risk].copy()
+        title = f"{title} (Filtered: {selected_risk})"
+    
+    # Get reason counts, filtering out empty/NaN reasons
+    reasons = display_df["reason"].dropna()
+    reasons = reasons[reasons.str.strip() != ""]
+    
+    if reasons.empty:
+        st.info("No reason data available for this group.")
+        return
+    
+    reason_counts = reasons.value_counts().head(10).reset_index()
+    reason_counts.columns = ["Reason", "Count"]
+    
+    # Create horizontal bar chart for better readability
+    fig = px.bar(
+        reason_counts,
+        x="Count",
+        y="Reason",
+        orientation="h",
+        title=title,
+        color="Count",
+        color_continuous_scale="Blues",
+        text="Count",
+    )
+    fig.update_traces(textposition="outside", textfont_size=12)
+    fig.update_layout(
+        height=max(300, len(reason_counts) * 40),
+        yaxis=dict(autorange="reversed"),
+        showlegend=False,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 def render_three_day_report(df: pd.DataFrame, week: int):
     df_week = df[df["week"] == week].copy()
@@ -185,17 +256,25 @@ def render_three_day_report(df: pd.DataFrame, week: int):
     if open_b:
         st.markdown("---")
         st.markdown(f"### {open_b} — Student Details")
+        
+        # Show reasons chart for CCD-Joined bucket
+        if open_b == "CCD-Joined":
+            bucket_df = students_in_bucket(df_week, open_b)
+            filter_key = open_b.lower().replace("-", "_")
+            _reasons_chart(bucket_df, title="Top Reasons for CCD-Joined Students (Missing → Joined)", filter_key=filter_key)
+            st.markdown("---")
+        
         if open_b == "Not Responding":
             sub = students_in_bucket(df_week, open_b)
             tab_first, tab_red = st.tabs(
                 [f"First Miss ({nr_split['First Miss']})",
                  f"Red Zone ({nr_split['Red Zone']})"])
             with tab_first:
-                _detail_table(sub[sub["no_of_follow_up"] <= 1])
+                _detail_table(sub[sub["no_of_follow_up"] <= 1], filter_key="first_miss")
             with tab_red:
-                _detail_table(sub[sub["no_of_follow_up"] > 1])
+                _detail_table(sub[sub["no_of_follow_up"] > 1], filter_key="red_zone")
         else:
-            _detail_table(students_in_bucket(df_week, open_b))
+            _detail_table(students_in_bucket(df_week, open_b), filter_key=open_b.lower().replace("-", "_"))
 
 
 # ---------------------------------------------------------------------------
