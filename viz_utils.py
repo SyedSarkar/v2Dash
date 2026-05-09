@@ -81,71 +81,136 @@ def _kpi_card(label: str, value: int, color: str, key: str,
     )
     return st.button("View students", key=key, use_container_width=True)
 
-
 def _detail_table(df: pd.DataFrame, columns: Iterable[str] = DETAIL_COLUMNS,
                   filter_key: str = "risk"):
     """
-    Render detail table with interactive risk filter chips.
-    
+    Render detail table with interactive multi-select risk filter chips.
+
     Args:
         df: DataFrame to display
         columns: Columns to show
         filter_key: Unique key for this table's filter session state
     """
+
     cols = [c for c in columns if c in df.columns]
+
     if df.empty:
         st.info("No students in this group.")
         return
 
-    # Read selected risk filter from session state
-    selected_risk = st.session_state.get(f"risk_filter_{filter_key}")
+    # MULTI-SELECT STATE
+    selected_risks = st.session_state.get(f"risk_filter_{filter_key}", [])
 
-    # mini risk-distribution caption above the table with clickable filters
+    # Ensure list
+    if not isinstance(selected_risks, list):
+        selected_risks = []
+
+    # Mini risk-distribution caption above the table
     if "risk_category" in df.columns:
+
         rd = risk_distribution(df)
+
         if not rd.empty:
-            st.markdown("<span style='opacity:.7;font-size:0.85rem'>Course-wise risk (click to filter):</span>",
-                       unsafe_allow_html=True)
-            
-            # Create columns for risk chips as buttons
+
+            st.markdown(
+                "<span style='opacity:.7;font-size:0.85rem'>"
+                "Course-wise risk (click to filter):"
+                "</span>",
+                unsafe_allow_html=True
+            )
+
+            # Create columns for risk chips
             risk_cols = st.columns(len(rd))
-            
+
             for i, (k, v) in enumerate(rd.items()):
+
                 with risk_cols[i]:
+
                     bg = RISK_COLORS.get(k, "#475569")
-                    is_selected = selected_risk == k
-                    # Add highlight border if selected
-                    border = "3px solid #1e293b" if is_selected else "none"
+
+                    # CHECK IF THIS CATEGORY IS SELECTED
+                    is_selected = k in selected_risks
+
+                    border = (
+                        "3px solid #1e293b"
+                        if is_selected
+                        else "none"
+                    )
+
                     st.markdown(
-                        f"""<div style='background:{bg};color:white;
-                        padding:4px 12px;border-radius:10px;
-                        font-size:0.85rem;text-align:center;
-                        border:{border};'>{k}: {int(v)}</div>""",
+                        f"""
+                        <div style='background:{bg};
+                                    color:white;
+                                    padding:4px 12px;
+                                    border-radius:10px;
+                                    font-size:0.85rem;
+                                    text-align:center;
+                                    border:{border};'>
+                            {k}: {int(v)}
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
-                    # Click handler
-                    btn_label = "✓ Selected" if is_selected else "Filter"
-                    if st.button(btn_label, key=f"risk_btn_{filter_key}_{k}", use_container_width=True):
-                        st.session_state[f"risk_filter_{filter_key}"] = None if is_selected else k
+
+                    btn_label = (
+                        "✓ Selected"
+                        if is_selected
+                        else "Filter"
+                    )
+
+                    # TOGGLE FILTER
+                    if st.button(
+                        btn_label,
+                        key=f"risk_btn_{filter_key}_{k}",
+                        use_container_width=True
+                    ):
+
+                        updated = selected_risks.copy()
+
+                        if k in updated:
+                            updated.remove(k)
+                        else:
+                            updated.append(k)
+
+                        st.session_state[f"risk_filter_{filter_key}"] = updated
+
                         st.rerun()
 
-    # Apply risk filter to the dataframe
+    # APPLY MULTI FILTER
     display_df = df.copy()
-    if selected_risk and "risk_category" in df.columns:
-        display_df = df[df["risk_category"] == selected_risk].copy()
+
+    if selected_risks and "risk_category" in df.columns:
+
+        display_df = df[
+            df["risk_category"].isin(selected_risks)
+        ].copy()
 
     show = display_df[cols].reset_index(drop=True).copy()
 
+    # Styling
     def _risk_bg(val):
+
         if pd.isna(val):
             return ""
-        return f"background-color: {RISK_COLORS.get(val, '#475569')}; color: white; font-weight: 600;"
+
+        return (
+            f"background-color: "
+            f"{RISK_COLORS.get(val, '#475569')}; "
+            f"color: white; "
+            f"font-weight: 600;"
+        )
 
     styler = show.style
+
     if "risk_category" in show.columns:
         styler = styler.map(_risk_bg, subset=["risk_category"])
 
-    st.dataframe(styler, use_container_width=True, hide_index=True)
+    st.dataframe(
+        styler,
+        use_container_width=True,
+        hide_index=True
+    )
+
     st.download_button(
         "Download CSV",
         show.to_csv(index=False).encode("utf-8"),
@@ -154,35 +219,55 @@ def _detail_table(df: pd.DataFrame, columns: Iterable[str] = DETAIL_COLUMNS,
         key=_ss_key("download", id(df)),
     )
 
-
 # ---------------------------------------------------------------------------
 # Tab 1: 3rd-Day Report
 # ---------------------------------------------------------------------------
+def _reasons_chart(
+    df: pd.DataFrame,
+    title: str = "Top Reasons",
+    filter_key: str = "risk"
+):
+    """Create a bar chart of top reasons respecting multi-risk filters."""
 
-def _reasons_chart(df: pd.DataFrame, title: str = "Top Reasons", filter_key: str = "risk"):
-    """Create a bar chart of the top reasons from the dataframe, respecting risk filter."""
     if df.empty or "reason" not in df.columns:
         return
-    
-    # Apply risk filter if selected
+
     display_df = df.copy()
-    selected_risk = st.session_state.get(f"risk_filter_{filter_key}")
-    if selected_risk and "risk_category" in df.columns:
-        display_df = df[df["risk_category"] == selected_risk].copy()
-        title = f"{title} (Filtered: {selected_risk})"
-    
-    # Get reason counts, filtering out empty/NaN reasons
+
+    # MULTI-SELECT FILTER
+    selected_risks = st.session_state.get(
+        f"risk_filter_{filter_key}",
+        []
+    )
+
+    if selected_risks and "risk_category" in df.columns:
+
+        display_df = df[
+            df["risk_category"].isin(selected_risks)
+        ].copy()
+
+        title = (
+            f"{title} "
+            f"(Filtered: {', '.join(selected_risks)})"
+        )
+
+    # Remove empty reasons
     reasons = display_df["reason"].dropna()
     reasons = reasons[reasons.str.strip() != ""]
-    
+
     if reasons.empty:
         st.info("No reason data available for this group.")
         return
-    
-    reason_counts = reasons.value_counts().head(10).reset_index()
+
+    reason_counts = (
+        reasons.value_counts()
+        .head(10)
+        .reset_index()
+    )
+
     reason_counts.columns = ["Reason", "Count"]
-    
-    # Create horizontal bar chart for better readability
+
+    # Chart
     fig = px.bar(
         reason_counts,
         x="Count",
@@ -193,16 +278,21 @@ def _reasons_chart(df: pd.DataFrame, title: str = "Top Reasons", filter_key: str
         color_continuous_scale="Blues",
         text="Count",
     )
-    fig.update_traces(textposition="outside", textfont_size=12)
+
+    fig.update_traces(
+        textposition="outside",
+        textfont_size=12
+    )
+
     fig.update_layout(
         height=max(300, len(reason_counts) * 40),
         yaxis=dict(autorange="reversed"),
         showlegend=False,
         margin=dict(l=10, r=10, t=50, b=10),
     )
+
     st.plotly_chart(fig, use_container_width=True)
-
-
+    
 def render_three_day_report(df: pd.DataFrame, week: int):
     df_week = df[df["week"] == week].copy()
 
