@@ -41,7 +41,8 @@ from data_utils import (
 
 DETAIL_COLUMNS = [
     "student_id", "student_name", "program", "phone",
-    "refer_to", "last_followup", "followup_status",
+    "refer_to", "last_followup", "followup_status", "last_visit_date",
+    "no_of_visit_in_semester",
     "no_of_follow_up", "reason", "remarks",
     "followup_date", "next_followup_date",
     "risk_category", "courses_at_risk", "total_courses",
