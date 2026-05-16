@@ -211,6 +211,11 @@ def _assign_bucket(row) -> str:
     if s == "" and r == "":
         return "Pending Contact"
 
+    # rule 0 — For CSM/Treasurer/SFC/SDC, refer_to takes priority over status
+    # If refer_to is one of these departments, bucket by refer_to regardless of status
+    if r.upper() in ("CSM", "TREASURER", "TREASURE", "SFC", "SDC"):
+        return _norm_dept_bucket(r)
+
     # rule 1 / 2
     if s == "closed":
         return "Closed"
